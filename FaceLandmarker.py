@@ -84,7 +84,7 @@ options = vision.FaceLandmarkerOptions(base_options=BaseOptions(model_asset_path
                                        result_callback=print_result)
 
 # STEP 3: Load the input image.
-cap = cv2.VideoCapture(2) # webcam
+cap = cv2.VideoCapture(0) # webcam
 
 with vision.FaceLandmarker.create_from_options(options) as detector:
     start_time = time.time()

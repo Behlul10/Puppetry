@@ -1,6 +1,6 @@
 import cv2
 
-cap = cv2.VideoCapture(1)  # Change this index if needed
+cap = cv2.VideoCapture(0)  # Change this index if needed
 
 if not cap.isOpened():
     print("Camera access denied or unavailable.")

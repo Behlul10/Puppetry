@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>3D Face Model Demo</title>
+    <!-- Socket.IO client -->
+    <script
+      src="https://cdn.socket.io/4.4.1/socket.io.js"
+      crossorigin="anonymous"
+    ></script>
+    <!-- Three.js library -->
+    <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <script>
+      // Set up the Three.js scene
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(
+        75,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        1000
+      );
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+//
+      // // Create and add a placeholder sphere that will be moved by one landmark
+      // const sphereGeometry = new THREE.SphereGeometry(1, 32, 32);
+      // const sphereMaterial = new THREE.MeshStandardMaterial({ color: 0x0077ff });
+      // const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+      // scene.add(sphere);
+
+      // Create a point cloud for showing all facial landmarks.
+      // We allocate enough room for, say, 1000 points (most face models have fewer).
+      const maxLandmarks = 1000; // adjust as needed
+      const pointsGeometry = new THREE.BufferGeometry();
+      const positions = new Float32Array(maxLandmarks * 3);
+      pointsGeometry.setAttribute(
+        "position",
+        new THREE.BufferAttribute(positions, 3)
+      );
+      const pointsMaterial = new THREE.PointsMaterial({
+        color: 0xff0000,
+        size: 0.05,
+      });
+      const landmarkPoints = new THREE.Points(pointsGeometry, pointsMaterial);
+      scene.add(landmarkPoints);
+
+      // Add some lighting.
+      const light = new THREE.DirectionalLight(0xffffff, 1);
+      light.position.set(5, 5, 5);
+      scene.add(light);
+
+      camera.position.z = 5;
+
+      // Animation loop.
+      function animate() {
+        requestAnimationFrame(animate);
+        renderer.render(scene, camera);
+      }
+      animate();
+
+      // Connect to the Socket.IO server.
+      const socket = io();
+
+      socket.on("connect", () => {
+        console.log("Connected to server");
+      });
+
+      // Update model based on landmark data from the server.
+      socket.on("landmark_data", (data) => {
+        // You already use the first landmark (index 0) to control the sphere.
+        if (data.face_0 && data.face_0.length > 0) {
+          const landmarks = data.face_0;
+
+//
+          // const nose = landmarks[0]; // for example, use the nose for translation.
+          // // Adjust sphere position; feel free to tweak the multipliers.
+          // sphere.position.x = (nose.x - 0.5) * 10;
+          // sphere.position.y = (nose.y - 0.5) * -10;
+          // sphere.position.z = nose.z * 10;
+
+          // Map all landmark points to a point cloud.
+          // Here, we assume landmark coordinates are normalized (0 to 1).
+          // We remap them so that (0.5, 0.5) is the center.
+          const positions = landmarkPoints.geometry.attributes.position.array;
+          const scaleFactor = 10; // adjust based on your demo scene for Z - cordinates
+          for (let i = 0; i < landmarks.length; i++) {
+            positions[3 * i] = (landmarks[i].x - 0.5) * scaleFactor;
+            // Invert y-coordinate so upward on the screen is positive.
+            positions[3 * i + 1] = (landmarks[i].y - 0.5) * -scaleFactor;
+            positions[3 * i + 2] = landmarks[i].z * scaleFactor;
+          }
+          // For any leftover points (if maxLandmarks is larger than the actual count), zero them out.
+          for (let i = landmarks.length; i < maxLandmarks; i++) {
+            positions[3 * i] = 0;
+            positions[3 * i + 1] = 0;
+            positions[3 * i + 2] = 0;
+          }
+          landmarkPoints.geometry.attributes.position.needsUpdate = true;
+        }
+      });
+
+      // Update the renderer size when the window is resized.
+      window.addEventListener("resize", () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+    </script>
+  </body>
+</html>
