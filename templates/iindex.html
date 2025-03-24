@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>3D Face Model Demo</title>
+    <!-- Socket.IO client -->
+    <script
+      src="https://cdn.socket.io/4.4.1/socket.io.js"
+      crossorigin="anonymous"
+    ></script>
+    <!-- Three.js library -->
+    <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+    <!-- GLTFLoader for loading 3D models -->
+    <script src="https://unpkg.com/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <script>
+      // Set up the Three.js scene, camera, and renderer.
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(
+        75,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        1000
+      );
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+
+      // Load the raccoon 3D model (with blendshapes, i.e., morph targets).
+      let model; // Global variable for the loaded model.
+      const loader = new THREE.GLTFLoader();
+      // Replace the URL below with your model file.
+      loader.load('models/raccoon_model.glb', function (gltf) {
+        model = gltf.scene;
+        // Optionally adjust model position/scaling.
+        model.position.set(0, -1, 0);
+        scene.add(model);
+      });
+
+      // Create a point cloud to display landmark positions.
+      const maxLandmarks = 1000;
+      const pointsGeometry = new THREE.BufferGeometry();
+      const positions = new Float32Array(maxLandmarks * 3);
+      pointsGeometry.setAttribute(
+        "position",
+        new THREE.BufferAttribute(positions, 3)
+      );
+      const pointsMaterial = new THREE.PointsMaterial({
+        color: 0xff0000,
+        size: 0.05,
+      });
+      const landmarkPoints = new THREE.Points(pointsGeometry, pointsMaterial);
+      scene.add(landmarkPoints);
+
+      // Add lighting.
+      const light = new THREE.DirectionalLight(0xffffff, 1);
+      light.position.set(5, 5, 5);
+      scene.add(light);
+
+      // Set the camera position.
+      camera.position.z = 5;
+
+      // Animation loop.
+      function animate() {
+        requestAnimationFrame(animate);
+        renderer.render(scene, camera);
+      }
+      animate();
+
+      // Define a mapping from blendshape names (from MediaPipe) to the model's morph target indices.
+      // Adjust these keys and values according to your raccoon model's setup.
+      const morphTargetMapping = {
+        "browRaise": 0,
+        "jawOpen": 1,
+        "smile": 2,
+        // Add additional mappings as needed.
+      };
+
+      // Connect to the Socket.IO server.
+      const socket = io();
+
+      socket.on("connect", () => {
+        console.log("Connected to server");
+      });
+
+      // Listen for detection data from the backend.
+      socket.on("landmark_data", (data) => {
+        // Update landmarks point cloud.
+        if (
+          data.landmarks &&
+          data.landmarks.face_0 &&
+          data.landmarks.face_0.length > 0
+        ) {
+          const landmarks = data.landmarks.face_0;
+          const positions = landmarkPoints.geometry.attributes.position.array;
+          const scaleFactor = 10;
+          for (let i = 0; i < landmarks.length; i++) {
+            positions[3 * i] = (landmarks[i].x - 0.5) * scaleFactor;
+            positions[3 * i + 1] = (landmarks[i].y - 0.5) * -scaleFactor;
+            positions[3 * i + 2] = landmarks[i].z * scaleFactor;
+          }
+          // Zero out unused points.
+          for (let i = landmarks.length; i < maxLandmarks; i++) {
+            positions[3 * i] = 0;
+            positions[3 * i + 1] = 0;
+            positions[3 * i + 2] = 0;
+          }
+          landmarkPoints.geometry.attributes.position.needsUpdate = true;
+        }
+        // Update blendshape (morph target) influences.
+        if (data.blendshapes && data.blendshapes.scores) {
+          const scores = data.blendshapes.scores;
+          const names = data.blendshapes.names;
+          // Ensure your model is loaded and has morph target influences.
+          // Here we assume the model’s primary mesh is in model.children[0].
+          if (
+            model &&
+            model.children.length > 0 &&
+            model.children[0].morphTargetInfluences
+          ) {
+            const influences = model.children[0].morphTargetInfluences;
+            if (names && names.length > 0) {
+              names.forEach((name, i) => {
+                const targetIndex = morphTargetMapping[name];
+                if (targetIndex !== undefined) {
+                  influences[targetIndex] = scores[i];
+                }
+              });
+            } else {
+              // Fallback: assign by order.
+              scores.forEach((score, i) => {
+                influences[i] = score;
+              });
+            }
+          }
+        }
+      });
+
+      // Adjust renderer size on window resize.
+      window.addEventListener("resize", () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+    </script>
+  </body>
+</html>
