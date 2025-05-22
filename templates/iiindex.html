@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>3D Face Animation Demo</title>
+  <!-- Socket.IO client -->
+  <script src="https://cdn.socket.io/4.4.1/socket.io.js" crossorigin="anonymous"></script>
+  
+  <!-- Import Three.js using ES modules -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.150.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.150.0/examples/jsm/"
+    }
+  }
+  </script>
+  
+  <script type="module">
+    // Import Three.js modules properly
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    
+    // Set up Socket.IO
+    const socket = io();
+    
+    // Global variable for expression amplification
+    let expressionAmplification = 5.0;
+    
+    socket.on("connect", () => {
+      console.log("Connected to server");
+      document.getElementById('debugInfo').textContent = "Connected to server, waiting for face data...";
+    });
+    
+    // Handle UI controls
+    document.addEventListener('DOMContentLoaded', () => {
+      const ampSlider = document.getElementById('amplification');
+      const ampValue = document.getElementById('ampValue');
+      const modelScaleSlider = document.getElementById('modelScale');
+      const scaleValue = document.getElementById('scaleValue');
+      const modelHeightSlider = document.getElementById('modelHeight');
+      const heightValue = document.getElementById('heightValue');
+      const toggleAxesBtn = document.getElementById('toggleAxes');
+      const resetCameraBtn = document.getElementById('resetCamera');
+      
+      if (ampSlider && ampValue) {
+        ampSlider.addEventListener('input', () => {
+          expressionAmplification = parseFloat(ampSlider.value);
+          ampValue.textContent = expressionAmplification.toFixed(1);
+        });
+      }
+      
+      if (modelScaleSlider && scaleValue) {
+        modelScaleSlider.addEventListener('input', () => {
+          const scale = parseFloat(modelScaleSlider.value);
+          scaleValue.textContent = scale.toFixed(1);
+          if (avatar.model) {
+            avatar.model.scale.set(scale, scale, scale);
+          }
+        });
+      }
+      
+      if (modelHeightSlider && heightValue) {
+        modelHeightSlider.addEventListener('input', () => {
+          const height = parseFloat(modelHeightSlider.value);
+          heightValue.textContent = height.toFixed(1);
+          if (avatar.model) {
+            avatar.model.position.y = height;
+          }
+        });
+      }
+      
+      if (toggleAxesBtn) {
+        toggleAxesBtn.addEventListener('click', () => {
+          axesHelper.visible = !axesHelper.visible;
+          gridHelper.visible = !gridHelper.visible;
+        });
+      }
+      
+      if (resetCameraBtn) {
+        resetCameraBtn.addEventListener('click', () => {
+          camera.position.set(0, 0, 4);
+          camera.lookAt(0, 0, 0);
+          controls.target.set(0, 0, 0);
+          controls.update();
+        });
+      }
+    });
+    
+    // Class to manage the avatar and blendshapes similar to the TS example
+    class Avatar {
+      scene;
+      model;
+      morphTargetMeshes = [];
+      
+      constructor(scene) {
+        this.scene = scene;
+        this.loadModel();
+      }
+      
+      loadModel() {
+        const loader = new GLTFLoader();
+        loader.load(
+          '/static/models/raccoon.glb',
+          (gltf) => {
+            this.model = gltf.scene;
+            
+            // Scale and position the model appropriately
+            this.model.scale.set(3, 3, 3); // Increase scale for better visibility
+            this.model.position.set(0, -0.5, 0); // Position slightly lower to center the face
+            this.model.rotation.y = Math.PI; // Rotate 180 degrees to face camera
+            this.scene.add(this.model);
+            
+            // Add a debug console message showing the model has loaded
+            console.log("Model hierarchy:", this.model);
+            console.log("Model loaded successfully with scale:", this.model.scale);
+            
+            this.init(gltf);
+            
+            console.log("Model loaded and initialized");
+          },
+          (xhr) => {
+            console.log((xhr.loaded / xhr.total * 100) + '% loaded');
+          },
+          (error) => {
+            console.error('Error loading model:', error);
+          }
+        );
+      }
+      
+      init(gltf) {
+        gltf.scene.traverse((object) => {
+          // Return early if no mesh is found
+          if (!object.isMesh) {
+            return;
+          }
+          
+          const mesh = object;
+          // Reduce clipping when model is close to camera
+          mesh.frustumCulled = false;
+          
+          // Return early if mesh doesn't include morphable targets
+          if (!mesh.morphTargetDictionary || !mesh.morphTargetInfluences) {
+            console.log(`Mesh ${mesh.name} does not have morphable targets`);
+            return;
+          }
+          
+          console.log(`Found morphable mesh: ${mesh.name}`);
+          console.log(`Morph target dictionary:`, mesh.morphTargetDictionary);
+          console.log(`Morph target influences: ${mesh.morphTargetInfluences.length}`);
+          
+          // Configure material for morphing
+          if (mesh.material) {
+            if (Array.isArray(mesh.material)) {
+              mesh.material.forEach(mat => {
+                mat.morphTargets = true;
+                mat.morphNormals = true;
+                mat.needsUpdate = true;
+              });
+            } else {
+              mesh.material.morphTargets = true;
+              mesh.material.morphNormals = true;
+              mesh.material.needsUpdate = true;
+            }
+          }
+          
+          this.morphTargetMeshes.push(mesh);
+        });
+        
+        // Test by setting some morph targets
+        this.testMorphTargets();
+      }
+      
+      testMorphTargets() {
+        // Create a test map with some values
+        const testMap = new Map();
+        
+        // Test each feature group with higher values to see what each morph target controls
+        
+        // Test eyes
+        testMap.set('8', 1.0);  // Test left eye blink
+        testMap.set('9', 1.0);  // Test right eye blink
+        
+        // Test brows
+        testMap.set('0', 1.0);  // Test left brow down
+        testMap.set('1', 1.0);  // Test right brow down
+        testMap.set('2', 1.0);  // Test inner brows up
+        
+        // Test mouth
+        testMap.set('24', 0.8); // Test jaw open
+        testMap.set('37', 0.8); // Test mouth pucker
+        testMap.set('43', 0.8); // Test smile left
+        testMap.set('44', 0.8); // Test smile right
+        
+        console.log("Testing morph targets with values:", Array.from(testMap.entries()));
+        this.updateBlendshapes(testMap);
+        
+        // Schedule follow-up tests to observe each morph target in isolation
+        // This will help identify what each index controls
+        setTimeout(() => {
+          // Test each morph target one by one
+          const runTest = (index) => {
+            if (index > 50) {
+              // After testing all, reset to normal state
+              this.updateBlendshapes(new Map());
+              return;
+            }
+            
+            console.log(`Testing morph target index ${index}`);
+            const testMap = new Map();
+            testMap.set(index.toString(), 1.0); // Full strength
+            this.updateBlendshapes(testMap);
+            
+            // Schedule the next test
+            setTimeout(() => runTest(index + 1), 500);
+          };
+          
+          runTest(0);
+        }, 5000);
+      }
+      
+      updateBlendshapes(blendshapes) {
+        console.log(`Updating blendshapes on ${this.morphTargetMeshes.length} meshes`);
+        
+        for (const mesh of this.morphTargetMeshes) {
+          if (!mesh.morphTargetDictionary || !mesh.morphTargetInfluences) {
+            console.warn(`Mesh ${mesh.name} does not have morphable targets`);
+            continue;
+          }
+          
+          // First reset all influences
+          for (let i = 0; i < mesh.morphTargetInfluences.length; i++) {
+            mesh.morphTargetInfluences[i] = 0;
+          }
+          
+          // Then apply the new values
+          for (const [name, value] of blendshapes) {
+            // Try directly using the name if it's in the dictionary
+            if (Object.keys(mesh.morphTargetDictionary).includes(name)) {
+              const idx = mesh.morphTargetDictionary[name];
+              mesh.morphTargetInfluences[idx] = value;
+              console.log(`Set morph target ${name} to ${value} (index ${idx})`);
+            } 
+            // If name is numeric, try using it as an index
+            else if (!isNaN(parseInt(name)) && parseInt(name) < mesh.morphTargetInfluences.length) {
+              const idx = parseInt(name);
+              mesh.morphTargetInfluences[idx] = value;
+              console.log(`Set morph target index ${idx} to ${value}`);
+            }
+          }
+          
+          // Log the non-zero values after setting
+          const nonZeroValues = Array.from(mesh.morphTargetInfluences)
+            .map((v, i) => v > 0 ? `${i}: ${v.toFixed(3)}` : null)
+            .filter(v => v !== null);
+          
+          console.log("Non-zero morph values after update:", nonZeroValues);
+          
+          // Force a complete geometry update
+          if (mesh.geometry) {
+            // Mark all geometry attributes for update
+            mesh.geometry.attributes.position.needsUpdate = true;
+            if (mesh.geometry.attributes.normal) {
+              mesh.geometry.attributes.normal.needsUpdate = true;
+            }
+            if (mesh.geometry.attributes.uv) {
+              mesh.geometry.attributes.uv.needsUpdate = true;
+            }
+            
+            // Force a complete geometry update
+            mesh.geometry.computeBoundingSphere();
+            mesh.geometry.computeBoundingBox();
+          }
+          
+          // Force complete material update
+          if (mesh.material) {
+            if (Array.isArray(mesh.material)) {
+              mesh.material.forEach(mat => { 
+                mat.needsUpdate = true;
+                // Ensure morphTargets is enabled
+                mat.morphTargets = true;
+                mat.morphNormals = true; 
+              });
+            } else {
+              mesh.material.needsUpdate = true;
+              // Ensure morphTargets is enabled
+              mesh.material.morphTargets = true;
+              mesh.material.morphNormals = true;
+            }
+          }
+          
+          // Tell Three.js this object needs to be updated in the renderer
+          mesh.visible = false;  // Toggle visibility to force a render update
+          setTimeout(() => {
+            mesh.visible = true;
+          }, 0);
+        }
+      }
+      
+      convertMediaPipeBlendshapes(data) {
+        if (!data.blendshapes) return null;
+        
+        const blendshapes = data.blendshapes;
+        let blendshapeMap = new Map();
+        
+        // Create a more accurate mapping between MediaPipe names and raccoon model indices
+        // based on observation of what each morph target does
+        const improvedMapping = {
+          // Eyes
+          'eyeBlinkLeft': 8,       // Left eye blink/close
+          'eyeBlinkRight': 9,      // Right eye blink/close
+          'eyeWideLeft': 20,       // Left eye open wide
+          'eyeWideRight': 21,      // Right eye open wide
+          'eyeLookUpLeft': 16,     // Left eye look up
+          'eyeLookUpRight': 17,    // Right eye look up
+          'eyeLookDownLeft': 10,   // Left eye look down
+          'eyeLookDownRight': 11,  // Right eye look down
+          'eyeLookInLeft': 12,     // Left eye look inward
+          'eyeLookInRight': 13,    // Right eye look inward
+          'eyeLookOutLeft': 14,    // Left eye look outward
+          'eyeLookOutRight': 15,   // Right eye look outward
+          'eyeSquintLeft': 18,     // Left eye squint
+          'eyeSquintRight': 19,    // Right eye squint
+          
+          // Brows
+          'browDownLeft': 0,       // Left brow down
+          'browDownRight': 1,      // Right brow down
+          'browInnerUp': 2,        // Inner brows up
+          'browOuterUpLeft': 3,    // Left outer brow up
+          'browOuterUpRight': 4,   // Right outer brow up
+          
+          // Jaw/Mouth
+          'jawOpen': 24,           // Jaw open
+          'jawLeft': 23,           // Jaw left
+          'jawRight': 25,          // Jaw right
+          'jawForward': 22,        // Jaw forward
+          
+          // Mouth
+          'mouthClose': 26,        // Close mouth
+          'mouthFunnel': 31,       // Funnel mouth (like "O")
+          'mouthPucker': 37,       // Pucker lips
+          'mouthLeft': 32,         // Mouth left
+          'mouthRight': 38,        // Mouth right
+          'mouthSmileLeft': 43,    // Left smile
+          'mouthSmileRight': 44,   // Right smile
+          'mouthFrownLeft': 29,    // Left frown
+          'mouthFrownRight': 30,   // Right frown
+          'mouthDimpleLeft': 27,   // Left dimple
+          'mouthDimpleRight': 28,  // Right dimple
+          'mouthStretchLeft': 45,  // Left stretch
+          'mouthStretchRight': 46, // Right stretch
+          'mouthRollLower': 39,    // Roll lower lip
+          'mouthRollUpper': 40,    // Roll upper lip
+          'mouthShrugLower': 41,   // Lower lip shrug
+          'mouthShrugUpper': 42,   // Upper lip shrug
+          'mouthPressLeft': 35,    // Press left lip
+          'mouthPressRight': 36,   // Press right lip
+          'mouthLowerDownLeft': 33, // Lower left lip down
+          'mouthLowerDownRight': 34, // Lower right lip down
+          'mouthUpperUpLeft': 47,  // Upper left lip up
+          'mouthUpperUpRight': 48, // Upper right lip up
+          
+          // Cheeks/Nose
+          'cheekPuff': 5,          // Puff cheeks
+          'cheekSquintLeft': 6,    // Left cheek squint
+          'cheekSquintRight': 7,   // Right cheek squint
+          'noseSneerLeft': 49,     // Left nose sneer
+          'noseSneerRight': 50     // Right nose sneer
+        };
+        
+        // Process all blendshapes and map them to indices
+        for (let i = 0; i < blendshapes.names.length; i++) {
+          const name = blendshapes.names[i];
+          if (name === '_neutral') continue;
+          
+          let value = blendshapes.scores[i];
+          
+          // Amplify certain expressions to make them more visible
+          switch (name) {
+            // Brows - increase expressiveness
+            case "browOuterUpLeft":
+            case "browOuterUpRight":
+              value *= 8.0 * (expressionAmplification / 5.0);  // Greatly amplify outer brow movements
+              break;
+              
+            case "browInnerUp":
+              value *= 6.0 * (expressionAmplification / 5.0);  // Greatly amplify inner brow movements
+              break;
+              
+            case "browDownLeft":
+            case "browDownRight":
+              value *= 5.0 * (expressionAmplification / 5.0);  // Amplify brow lowering
+              break;
+            
+            // Eyes - make blinks and eye movements more pronounced
+            case "eyeBlinkLeft":
+            case "eyeBlinkRight":
+              value *= 10.0 * (expressionAmplification / 5.0);  // Enormously amplify blinks
+              break;
+              
+            case "eyeSquintLeft":
+            case "eyeSquintRight":
+              value *= 6.0 * (expressionAmplification / 5.0);  // Greatly amplify squints
+              break;
+              
+            case "eyeLookUpLeft":
+            case "eyeLookUpRight":
+            case "eyeLookDownLeft":
+            case "eyeLookDownRight":
+            case "eyeLookInLeft":
+            case "eyeLookInRight":
+            case "eyeLookOutLeft":
+            case "eyeLookOutRight":
+              value *= 5.0 * (expressionAmplification / 5.0);  // Greatly amplify eye direction movements
+              break;
+            
+            // Jaw - make mouth movements much more visible
+            case "jawOpen":
+              value *= 8.0 * (expressionAmplification / 5.0);  // Greatly amplify jaw opening
+              break;
+              
+            case "jawLeft":
+            case "jawRight":
+            case "jawForward":
+              value *= 6.0 * (expressionAmplification / 5.0);  // Greatly amplify jaw movements
+              break;
+            
+            // Mouth expressions - make smiles and frowns much more obvious
+            case "mouthSmileLeft":
+            case "mouthSmileRight":
+              value *= 10.0 * (expressionAmplification / 5.0);  // Enormously amplify smiles
+              break;
+              
+            case "mouthFrownLeft":
+            case "mouthFrownRight":
+              value *= 6.0 * (expressionAmplification / 5.0);  // Greatly amplify frowns
+              break;
+              
+            case "mouthPucker":
+              value *= 8.0 * (expressionAmplification / 5.0);  // Greatly amplify pucker
+              break;
+              
+            case "mouthFunnel":
+              value *= 10.0 * (expressionAmplification / 5.0);  // Enormously amplify funnel
+              break;
+              
+            // Cheeks
+            case "cheekPuff":
+              value *= 10.0 * (expressionAmplification / 5.0);  // Enormously amplify cheek puffing
+              break;
+              
+            // Lip movements
+            case "mouthPress":
+            case "mouthPressLeft":
+            case "mouthPressRight":
+            case "mouthUpperUpLeft":
+            case "mouthUpperUpRight":
+            case "mouthLowerDownLeft":
+            case "mouthLowerDownRight":
+            case "mouthStretchLeft":
+            case "mouthStretchRight":
+            case "mouthRollLower":
+            case "mouthRollUpper":
+            case "mouthShrugLower":
+            case "mouthShrugUpper":
+              value *= 6.0 * (expressionAmplification / 5.0);  // Greatly amplify lip movements
+              break;
+              
+            // For all other expressions, apply the global amplification
+            default:
+              value *= 2.0 * (expressionAmplification / 5.0);
+              break;
+          }
+          
+          // Clamp the value to prevent overflow
+          value = Math.min(1, Math.max(0, value));
+          
+          // Map the MediaPipe name to model index using our improved mapping
+          const index = improvedMapping[name];
+          if (index !== undefined) {
+            // Store the target index as a string since that's what the dictionary expects
+            blendshapeMap.set(index.toString(), value);
+            
+            if (value > 0.1) {
+              console.log(`Mapped ${name} to index ${index} with value ${value.toFixed(3)}`);
+            }
+          }
+        }
+        
+        return blendshapeMap;
+      }
+    }
+    
+    // Set up the Three.js scene
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x202030);
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    // Add video element
+    const video = document.createElement('video');
+    video.style.display = 'none';
+    video.autoplay = true;
+    video.playsInline = true;
+    document.body.appendChild(video);
+
+    // Create the avatar
+    const avatar = new Avatar(scene);
+    
+    // Position camera
+    camera.position.set(0, 0, 4); // Position camera closer for better view
+    camera.lookAt(0, 0, 0);
+    
+    // Add camera controls
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.25;
+    controls.minDistance = 2; // Allow camera to get closer
+    controls.maxDistance = 10;
+    controls.target.set(0, 0, 0);
+    controls.update();
+
+    // Create a point cloud for showing facial landmarks
+    const maxLandmarks = 1000;
+    const pointsGeometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(maxLandmarks * 3);
+    pointsGeometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    const pointsMaterial = new THREE.PointsMaterial({
+      color: 0x00ffff,
+      size: 0.05, // Increased point size for better visibility
+    });
+    const landmarkPoints = new THREE.Points(pointsGeometry, pointsMaterial);
+    scene.add(landmarkPoints);
+
+    // Add lighting
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.7); // Increased ambient light
+    scene.add(ambientLight);
+    
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 1.2); // Increased brightness
+    directionalLight.position.set(1, 1, 1);
+    directionalLight.castShadow = true;
+    directionalLight.shadow.mapSize.width = 1024;
+    directionalLight.shadow.mapSize.height = 1024;
+    scene.add(directionalLight);
+    
+    // Add a second directional light from the opposite direction for better illumination
+    const fillLight = new THREE.DirectionalLight(0xffffee, 0.8); // Warmer light color
+    fillLight.position.set(-1, 0.5, -1);
+    scene.add(fillLight);
+
+    // Enable shadow mapping
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+    // Add debug axes
+    const axesHelper = new THREE.AxesHelper(5);
+    scene.add(axesHelper);
+
+    // Add debug grid
+    const gridHelper = new THREE.GridHelper(10, 10);
+    scene.add(gridHelper);
+
+    // Animation loop
+    function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        
+        // Debug log model position and rotation
+        if (avatar.model) {
+            console.log("Model position:", avatar.model.position);
+            console.log("Model rotation:", avatar.model.rotation);
+            console.log("Model scale:", avatar.model.scale);
+        }
+        
+        renderer.render(scene, camera);
+    }
+    animate();
+    
+    // Update the Socket.IO event to match backend
+    socket.on("landmark_data", (data) => {
+        const debugElement = document.getElementById('debugInfo');
+        
+        // Debug log the incoming data
+        console.log("Received data:", {
+            hasBlendshapes: !!data.blendshapes,
+            hasTransformationMatrix: !!data.transformationMatrix,
+            blendshapeNames: data.blendshapes?.names,
+            blendshapeScores: data.blendshapes?.scores
+        });
+        
+        // Update facial landmarks if available
+        if (data.landmarks && landmarkPoints) {
+            const positions = landmarkPoints.geometry.attributes.position.array;
+            const scale = 1.0; // Adjust based on your model size
+            
+            // Update landmark positions
+            for (let i = 0; i < data.landmarks.length; i++) {
+                const point = data.landmarks[i];
+                // Convert from MediaPipe coordinate system to Three.js coordinate system
+                // MediaPipe: +Y is down, +X is right, +Z is forward from the camera
+                // Three.js: +Y is up, +X is right, +Z is toward the camera
+                positions[i * 3] = point.x * scale; // X stays the same
+                positions[i * 3 + 1] = -point.y * scale; // Y is inverted
+                positions[i * 3 + 2] = -point.z * scale; // Z is inverted
+            }
+            
+            // Update the rest of the positions array with zeros
+            for (let i = data.landmarks.length; i < maxLandmarks; i++) {
+                positions[i * 3] = 0;
+                positions[i * 3 + 1] = 0;
+                positions[i * 3 + 2] = 0;
+            }
+            
+            landmarkPoints.geometry.attributes.position.needsUpdate = true;
+        }
+        
+        // Update blendshapes on the raccoon model
+        if (data.blendshapes && avatar.morphTargetMeshes.length > 0) {
+            const blendshapeMap = avatar.convertMediaPipeBlendshapes(data);
+            avatar.updateBlendshapes(blendshapeMap);
+            
+            // Show debug info for significant blendshapes
+            const significantBlendshapes = data.blendshapes.scores
+                .map((score, idx) => ({ 
+                    name: data.blendshapes.names[idx],
+                    score 
+                }))
+                .filter(b => b.score > 0.1)
+                .map(b => `${b.name}(${b.score.toFixed(2)})`)
+                .join(', ');
+            
+            debugElement.textContent = `Active blendshapes: ${significantBlendshapes}`;
+        }
+
+        // Apply transformation matrix if available
+        if (data.transformationMatrix && avatar.model) {
+            console.log("Applying transformation matrix:", data.transformationMatrix);
+            
+            // Create a new matrix from the transformation data
+            const matrix = new THREE.Matrix4().fromArray(data.transformationMatrix);
+            
+            // Scale the translation part of the matrix to match model scale
+            // This helps when the face landmarks are at a different scale than the model
+            const scale = new THREE.Vector3(3, 3, 3); // Updated to match new model scale
+            const position = new THREE.Vector3();
+            const quaternion = new THREE.Quaternion();
+            
+            // Extract position, rotation, and scale
+            matrix.decompose(position, quaternion, new THREE.Vector3());
+            
+            // Scale the position to match the model's scale
+            position.multiply(scale);
+            
+            // Apply to model - preserving our intentional Y-rotation of 180 degrees
+            const modelRotation = new THREE.Euler(0, Math.PI, 0);
+            const modelQuaternion = new THREE.Quaternion().setFromEuler(modelRotation);
+            
+            // Combine the face rotation with our model rotation
+            quaternion.premultiply(modelQuaternion);
+            
+            // Update the model position and rotation
+            avatar.model.position.copy(position);
+            // Apply Y offset to position the face better
+            avatar.model.position.y -= 0.5;
+            avatar.model.quaternion.copy(quaternion);
+            
+            // Keep the scale we want
+            avatar.model.scale.copy(scale);
+            
+            // Force update of the matrix
+            avatar.model.updateMatrix();
+        }
+    });
+
+    // Handle window resizing
+    window.addEventListener("resize", () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+    
+    // Add UI buttons
+    document.getElementById('togglePoints')?.addEventListener('click', () => {
+      landmarkPoints.visible = !landmarkPoints.visible;
+    });
+  </script>
+  
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      font-family: Arial, sans-serif;
+    }
+    canvas {
+      display: block;
+    }
+    .controls {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(0,0,0,0.5);
+      color: white;
+      padding: 10px;
+      border-radius: 5px;
+      max-width: 250px;
+    }
+    .slider-container {
+      margin-top: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .slider-container label {
+      min-width: 100px;
+    }
+    input[type="range"] {
+      width: 100px;
+    }
+    button {
+      margin-top: 10px;
+      padding: 5px 10px;
+      background: #2a2a2a;
+      color: white;
+      border: 1px solid #444;
+      border-radius: 3px;
+      cursor: pointer;
+      display: block;
+      width: 100%;
+    }
+    button:hover {
+      background: #444;
+    }
+    .debug {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      background: rgba(0,0,0,0.5);
+      color: white;
+      padding: 10px;
+      border-radius: 5px;
+      font-size: 12px;
+      max-height: 150px;
+      overflow-y: auto;
+      max-width: 400px;
+    }
+  </style>
+</head>
+<body>
+  <div class="controls">
+    <button id="togglePoints">Toggle Landmarks</button>
+    <div class="slider-container">
+      <label for="amplification">Expression Strength:</label>
+      <input type="range" id="amplification" min="1" max="10" value="5" step="0.5">
+      <span id="ampValue">5.0</span>
+    </div>
+    <div class="slider-container">
+      <label for="modelScale">Model Scale:</label>
+      <input type="range" id="modelScale" min="1" max="5" value="3" step="0.1">
+      <span id="scaleValue">3.0</span>
+    </div>
+    <div class="slider-container">
+      <label for="modelHeight">Model Height:</label>
+      <input type="range" id="modelHeight" min="-2" max="2" value="-0.5" step="0.1">
+      <span id="heightValue">-0.5</span>
+    </div>
+    <button id="toggleAxes">Toggle Axes/Grid</button>
+    <button id="resetCamera">Reset Camera</button>
+  </div>
+  <div class="debug" id="debugInfo">Waiting for face data...</div>
+</body>
+</html>
+

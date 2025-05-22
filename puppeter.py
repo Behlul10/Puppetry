@@ -6,7 +6,6 @@ import cv2
 import numpy as np
 import mediapipe as mp
 
-
 from flask import Flask, render_template
 from flask_socketio import SocketIO
 
