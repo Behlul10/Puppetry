@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>3D Face‑Avatar Demo</title>
+  <style>
+        body{margin:0;overflow:hidden;}
+        canvas{display:block;}
+  </style>
+  <script src="https://cdn.socket.io/4.4.1/socket.io.min.js"></script>
+</head>
+<body>
+<script type="module">
+//   import * as THREE from "https://cdn.skypack.dev/three@0.150.1";
+import * as THREE from "three";
+  import { OrbitControls }
+    from "https://cdn.skypack.dev/three@0.150.1/examples/jsm/controls/OrbitControls.js";
+  import { GLTFLoader }
+    from "https://cdn.skypack.dev/three@0.150.1/examples/jsm/loaders/GLTFLoader.js";
+
+  // ----- Basic three.js scene -----
+  const scene    = new THREE.Scene();
+  const camera   = new THREE.PerspectiveCamera(
+    60, window.innerWidth/window.innerHeight, 0.01, 5000
+  );
+  const renderer = new THREE.WebGLRenderer({antialias:true});
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  document.body.appendChild(renderer.domElement);
+
+  scene.add(new THREE.AmbientLight(0xffffff,0.5));
+  const dl = new THREE.DirectionalLight(0xffffff,0.5);
+  dl.position.set(0,1,0);
+  scene.add(dl);
+
+  camera.position.set(0,0,5);
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.update();
+
+  window.addEventListener("resize",()=>{
+    camera.aspect = window.innerWidth/window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  function animate() {
+    requestAnimationFrame(animate);
+    renderer.render(scene, camera);
+  }
+  animate();
+
+  // ----- Avatar loader -----
+  class Avatar {
+    constructor(url, scene) {
+      this.scene = scene;
+      this.loader = new GLTFLoader();
+      this.morphMeshes = [];
+      this.loader.load(url, gltf => {
+        this.gltf = gltf;
+        scene.add(gltf.scene);
+        gltf.scene.traverse(obj => {
+          if (obj.isMesh &&
+              obj.morphTargetDictionary &&
+              obj.morphTargetInfluences) {
+            obj.frustumCulled = false;
+            this.morphMeshes.push(obj);
+          }
+        });
+      });
+    }
+    applyMatrix(mat4, {scale=1}={}) {
+      if (!this.gltf) return;
+      this.gltf.scene.matrixAutoUpdate = false;
+      const M = mat4.clone().scale(new THREE.Vector3(scale,scale,scale));
+      this.gltf.scene.matrix.copy(M);
+    }
+    updateBlendshapes(coefs) {
+      for (const m of this.morphMeshes) {
+        for (const [name, val] of coefs) {
+          const idx = m.morphTargetDictionary[name];
+          if (idx!==undefined) {
+            m.morphTargetInfluences[idx] = val;
+          }
+        }
+      }
+    }
+  }
+
+  function retarget(blendshapes) {
+    const map = new Map();
+    blendshapes.forEach(c=>{
+      let v = c.score;
+      if (c.categoryName.includes("brow") ||
+          c.categoryName.includes("eyeBlink")) {
+        v *= 1.2;
+      }
+      map.set(c.categoryName, v);
+    });
+    return map;
+  }
+
+  const avatar = new Avatar(
+    "https://assets.codepen.io/9177687/raccoon_head.glb",
+    scene
+  );
+
+  // ----- Socket.IO client -----
+  const socket = io();
+  socket.on("connect", ()=>console.log("Connected to server"));
+  socket.on("mp_data", data=>{
+    if (data.matrix) {
+      const M = new THREE.Matrix4().fromArray(data.matrix);
+      avatar.applyMatrix(M, {scale: 40});
+    }
+    if (data.blendshapes) {
+      const coefs = retarget(data.blendshapes);
+      avatar.updateBlendshapes(coefs);
+    }
+  });
+</script>
+<script src="https://cdn.socket.io/4.4.1/socket.io.min.js"></script>
+</body>
+</html>

@@ -1,3 +1,5 @@
+#works
+
 import mediapipe as mp
 import cv2  # For webcam access
 import numpy as np
@@ -84,7 +86,7 @@ options = vision.FaceLandmarkerOptions(base_options=BaseOptions(model_asset_path
                                        result_callback=print_result)
 
 # STEP 3: Load the input image.
-cap = cv2.VideoCapture(0) # webcam
+cap = cv2.VideoCapture(1) # webcam
 
 with vision.FaceLandmarker.create_from_options(options) as detector:
     start_time = time.time()
